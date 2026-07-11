@@ -76,42 +76,54 @@ lock = threading.Lock()
 NY_BBOX = "40.4,-79.9,45.1,-71.7"  # New York eyaleti kabaca sınır kutusu (hızlı filtre)
 
 
+def _run_overpass(query):
+    last_err = None
+    for url in OVERPASS_URLS:
+        try:
+            r = requests.post(url, data={"data": query}, headers=HEADERS, timeout=60)
+            r.raise_for_status()
+            data = r.json()
+            if not data.get("elements") and data.get("remark"):
+                last_err = data["remark"]
+                continue
+            return data.get("elements", [])
+        except Exception as e:
+            last_err = e
+            continue
+    raise RuntimeError(f"Overpass API'ye erişilemedi veya zaman aşımına uğradı: {last_err}")
+
+
 def overpass_query(keyword):
     kw = keyword.lower().strip()
     tags = KEYWORD_TAG_MAP.get(kw, [])
-    tag_filters = "".join(
-        f'nwr[{t.split("=")[0]}="{t.split("=")[1]}"]({NY_BBOX});' for t in tags
-    )
     safe_kw = re.sub(r'["\\]', "", keyword)
-    # İsimde geçen kelimeyi SADECE dükkan/ofis/amenity/craft etiketi olan
-    # noktalarla sınırlıyoruz; yoksa yol/nehir/bina gibi milyonlarca
-    # alakasız kayıt da taranıp sorgu çok yavaşlıyor.
+
+    elements = []
+
+    if tags:
+        tag_filters = "".join(
+            f'nwr[{t.split("=")[0]}="{t.split("=")[1]}"]({NY_BBOX});' for t in tags
+        )
+        q1 = f"[out:json][timeout:45];({tag_filters});out center tags 300;"
+        try:
+            elements += _run_overpass(q1)
+        except Exception:
+            pass
+
     name_filter = (
         f'nwr["shop"]["name"~"{safe_kw}",i]({NY_BBOX});'
         f'nwr["office"]["name"~"{safe_kw}",i]({NY_BBOX});'
         f'nwr["amenity"]["name"~"{safe_kw}",i]({NY_BBOX});'
         f'nwr["craft"]["name"~"{safe_kw}",i]({NY_BBOX});'
     )
+    q2 = f"[out:json][timeout:45];({name_filter});out center tags 300;"
+    try:
+        elements += _run_overpass(q2)
+    except Exception as e:
+        if not elements:
+            raise
 
-    query = f"""
-    [out:json][timeout:60];
-    (
-      {tag_filters}
-      {name_filter}
-    );
-    out center tags 300;
-    """
-
-    last_err = None
-    for url in OVERPASS_URLS:
-        try:
-            r = requests.post(url, data={"data": query}, headers=HEADERS, timeout=70)
-            r.raise_for_status()
-            return r.json().get("elements", [])
-        except Exception as e:
-            last_err = e
-            continue
-    raise RuntimeError(f"Overpass API'ye erişilemedi: {last_err}")
+    return elements
 
 
 def extract_emails_from_text(text):
