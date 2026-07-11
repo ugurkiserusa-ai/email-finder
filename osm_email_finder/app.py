@@ -16,8 +16,6 @@ OVERPASS_URLS = [
     "https://overpass.kumi.systems/api/interpreter",
 ]
 
-# Anahtar kelime -> OSM etiketi eşleme tablosu.
-# Buraya istediğin kadar satır ekleyebilirsin (küçük harf olmalı).
 KEYWORD_TAG_MAP = {
     "auto": ["shop=car_repair", "shop=car", "shop=car_parts", "shop=tyres"],
     "oto": ["shop=car_repair", "shop=car", "shop=car_parts", "shop=tyres"],
@@ -49,7 +47,6 @@ KEYWORD_TAG_MAP = {
     "muhasebe": ["office=accountant"],
 }
 
-# Sahte / işe yaramaz email domainleri (bulunsa bile elenir)
 BAD_EMAIL_DOMAINS = {
     "wixpress.com", "sentry.io", "example.com", "godaddy.com",
     "schema.org", "w3.org", "yourdomain.com", "domain.com",
@@ -63,7 +60,7 @@ progress_state = {
     "total": 0,
     "processed": 0,
     "emails_found": 0,
-    "status": "idle",   # idle | searching | processing | done | error
+    "status": "idle",
     "error": None,
     "results": [],
     "file_path": None,
@@ -72,15 +69,14 @@ progress_state = {
 }
 lock = threading.Lock()
 
-
-NY_BBOX = "40.4,-79.9,45.1,-71.7"  # New York eyaleti kabaca sınır kutusu (hızlı filtre)
+NY_BBOX = "40.4,-79.9,45.1,-71.7"
 
 
 def _run_overpass(query):
     last_err = None
     for url in OVERPASS_URLS:
         try:
-            r = requests.post(url, data={"data": query}, headers=HEADERS, timeout=60)
+            r = requests.post(url, data={"data": query}, headers=HEADERS, timeout=(15, 110))
             r.raise_for_status()
             data = r.json()
             if not data.get("elements") and data.get("remark"):
@@ -104,24 +100,21 @@ def overpass_query(keyword):
         tag_filters = "".join(
             f'nwr[{t.split("=")[0]}="{t.split("=")[1]}"]({NY_BBOX});' for t in tags
         )
-        q1 = f"[out:json][timeout:45];({tag_filters});out center tags 300;"
+        q1 = f"[out:json][timeout:90];({tag_filters});out center tags 300;"
         try:
             elements += _run_overpass(q1)
         except Exception:
             pass
 
-    name_filter = (
-        f'nwr["shop"]["name"~"{safe_kw}",i]({NY_BBOX});'
-        f'nwr["office"]["name"~"{safe_kw}",i]({NY_BBOX});'
-        f'nwr["amenity"]["name"~"{safe_kw}",i]({NY_BBOX});'
-        f'nwr["craft"]["name"~"{safe_kw}",i]({NY_BBOX});'
-    )
-    q2 = f"[out:json][timeout:45];({name_filter});out center tags 300;"
-    try:
+    if not elements:
+        name_filter = (
+            f'nwr["shop"]["name"~"{safe_kw}",i]({NY_BBOX});'
+            f'nwr["office"]["name"~"{safe_kw}",i]({NY_BBOX});'
+            f'nwr["amenity"]["name"~"{safe_kw}",i]({NY_BBOX});'
+            f'nwr["craft"]["name"~"{safe_kw}",i]({NY_BBOX});'
+        )
+        q2 = f"[out:json][timeout:90];({name_filter});out center tags 300;"
         elements += _run_overpass(q2)
-    except Exception as e:
-        if not elements:
-            raise
 
     return elements
 
@@ -261,46 +254,7 @@ def search():
     with lock:
         stuck = (
             progress_state["status"] in ("searching", "processing")
-            and (time.time() - progress_state["started_at"]) > 180
+            and (time.time() - progress_state["started_at"]) > 260
         )
         if progress_state["status"] in ("searching", "processing") and not stuck:
-            return jsonify({"error": "Zaten bir arama çalışıyor"}), 409
-    t = threading.Thread(target=process_search, args=(keyword,), daemon=True)
-    t.start()
-    return jsonify({"started": True})
-
-
-@app.route("/progress")
-def progress():
-    with lock:
-        total = progress_state["total"]
-        processed = progress_state["processed"]
-        percent = int(processed / total * 100) if total else (100 if progress_state["status"] == "done" else 0)
-        return jsonify({
-            "total": total,
-            "processed": processed,
-            "emails_found": progress_state["emails_found"],
-            "status": progress_state["status"],
-            "error": progress_state["error"],
-            "percent": percent,
-        })
-
-
-@app.route("/results")
-def results():
-    with lock:
-        return jsonify(progress_state["results"])
-
-
-@app.route("/download")
-def download():
-    with lock:
-        path = progress_state["file_path"]
-    if not path or not os.path.exists(path):
-        return "Henüz hazır değil", 404
-    return send_file(path, as_attachment=True, download_name="firma_email_listesi.xlsx")
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+            return
