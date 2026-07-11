@@ -68,33 +68,44 @@ progress_state = {
     "results": [],
     "file_path": None,
     "keyword": None,
+    "started_at": 0,
 }
 lock = threading.Lock()
+
+
+NY_BBOX = "40.4,-79.9,45.1,-71.7"  # New York eyaleti kabaca sınır kutusu (hızlı filtre)
 
 
 def overpass_query(keyword):
     kw = keyword.lower().strip()
     tags = KEYWORD_TAG_MAP.get(kw, [])
     tag_filters = "".join(
-        f'nwr[{t.split("=")[0]}="{t.split("=")[1]}"](area.ny);' for t in tags
+        f'nwr[{t.split("=")[0]}="{t.split("=")[1]}"]({NY_BBOX});' for t in tags
     )
     safe_kw = re.sub(r'["\\]', "", keyword)
-    name_filter = f'nwr["name"~"{safe_kw}",i](area.ny);'
+    # İsimde geçen kelimeyi SADECE dükkan/ofis/amenity/craft etiketi olan
+    # noktalarla sınırlıyoruz; yoksa yol/nehir/bina gibi milyonlarca
+    # alakasız kayıt da taranıp sorgu çok yavaşlıyor.
+    name_filter = (
+        f'nwr["shop"]["name"~"{safe_kw}",i]({NY_BBOX});'
+        f'nwr["office"]["name"~"{safe_kw}",i]({NY_BBOX});'
+        f'nwr["amenity"]["name"~"{safe_kw}",i]({NY_BBOX});'
+        f'nwr["craft"]["name"~"{safe_kw}",i]({NY_BBOX});'
+    )
 
     query = f"""
-    [out:json][timeout:180];
-    area["ISO3166-2"="US-NY"]["admin_level"="4"]->.ny;
+    [out:json][timeout:60];
     (
       {tag_filters}
       {name_filter}
     );
-    out center tags;
+    out center tags 300;
     """
 
     last_err = None
     for url in OVERPASS_URLS:
         try:
-            r = requests.post(url, data={"data": query}, headers=HEADERS, timeout=200)
+            r = requests.post(url, data={"data": query}, headers=HEADERS, timeout=70)
             r.raise_for_status()
             return r.json().get("elements", [])
         except Exception as e:
@@ -151,6 +162,7 @@ def process_search(keyword):
         progress_state.update(
             total=0, processed=0, emails_found=0, status="searching",
             error=None, results=[], file_path=None, keyword=keyword,
+            started_at=time.time(),
         )
 
     try:
@@ -235,7 +247,11 @@ def search():
     if not keyword:
         return jsonify({"error": "Anahtar kelime gerekli"}), 400
     with lock:
-        if progress_state["status"] in ("searching", "processing"):
+        stuck = (
+            progress_state["status"] in ("searching", "processing")
+            and (time.time() - progress_state["started_at"]) > 180
+        )
+        if progress_state["status"] in ("searching", "processing") and not stuck:
             return jsonify({"error": "Zaten bir arama çalışıyor"}), 409
     t = threading.Thread(target=process_search, args=(keyword,), daemon=True)
     t.start()
