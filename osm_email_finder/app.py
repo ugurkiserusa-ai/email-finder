@@ -5,7 +5,7 @@ import threading
 import requests
 from urllib.parse import urljoin, urlparse
 from flask import Flask, render_template, request, jsonify, send_file
-import pandas as pd
+from openpyxl import Workbook
 
 app = Flask(__name__)
 
@@ -209,9 +209,14 @@ def process_search(keyword):
                 progress_state["emails_found"] += 1
                 progress_state["results"] = list(results)
 
-    df = pd.DataFrame(results, columns=["Firma Adı", "Adres", "Telefon", "Email"])
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sonuçlar"
+    ws.append(["Firma Adı", "Adres", "Telefon", "Email"])
+    for row in results:
+        ws.append([row["Firma Adı"], row["Adres"], row["Telefon"], row["Email"]])
     out_path = os.path.join(os.getcwd(), "sonuclar.xlsx")
-    df.to_excel(out_path, index=False)
+    wb.save(out_path)
 
     with lock:
         progress_state["status"] = "done"
